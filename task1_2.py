@@ -1,6 +1,7 @@
 import logging
+import numpy as np
 
-logging.basicConfig(level=logging.INFO,  # Устанавливаем уровень логирования
+logging.basicConfig(level=logging.INFO, 
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
 from pade.misc.utility import display_message, start_loop
@@ -20,13 +21,17 @@ from random import randint, seed as rand_seed, random
 AGENTS_NUM = 10
 WEIGHTS_BOUNDARIES = (-100, 100)
 # Интервал обновления
-DELAY = 3
+DELAY = 2
 # Вероятность, что связь есть в i-й момент
-CONNECTION_PROBABILITY = 0.2
+CONNECTION_PROBABILITY = 0.7
 # Вероятность, что связь будет в принципе 
 # (Здесь актуально только для большого количества вершин, потому что у меня граф связный)
-LINK_FORM_PROBABILTY = 0.1
-# Показывать граф
+LINK_FORM_PROBABILTY = 0.3
+
+# Помехи
+INTERFERENCE_STD = 0.1
+# INTERFERENCE_STD = None
+# Показывать граф или нет
 SHOW_GRAPH = True
 
 RAND_SEED = None
@@ -53,6 +58,7 @@ class AVGAgent(Agent):
         self.neighbors = neighbors
         self.mapping_idx_agent_name = mapping_idx_agent_name
         self.known_weights = {idx: num}
+        self.heard_weights_times = {}
         display_message(self.aid.localname, f'Мой номер: {idx}. Моё число: {num}')
 
         send_behaviour = SendBehaviour(self, delay)
@@ -62,7 +68,15 @@ class AVGAgent(Agent):
     def send_message(self, neighbor_idx):
         msg = ACLMessage()
         msg.add_receiver(AID(name=self.mapping_idx_agent_name[neighbor_idx]))
-        msg.set_content(json.dumps(self.known_weights))
+        
+        if INTERFERENCE_STD is not None:
+            errors =  np.random.normal(0, INTERFERENCE_STD, len(self.known_weights))
+            erorrs_weights = {}
+            for i, weight in enumerate(self.known_weights):
+                erorrs_weights[weight] = self.known_weights[weight] + errors[i]
+        else:
+            erorrs_weights = self.known_weights.copy()
+        msg.set_content(json.dumps(erorrs_weights))
         self.send(msg)
 
     def react(self, message):
@@ -70,7 +84,18 @@ class AVGAgent(Agent):
         if not message.system_message:
             try:
                 # Иначе ключи будут строками
-                self.known_weights.update({int(key): value for key, value in json.loads(message.content).items()})
+                got_weights = {int(key): value for key, value in json.loads(message.content).items()}
+                if self.idx in got_weights.keys():
+                    got_weights.pop(self.idx)
+                # Обновляем avg
+                for idx in got_weights:
+                    if idx not in self.heard_weights_times:
+                        self.heard_weights_times[idx] = 1
+                        self.known_weights[idx] = got_weights[idx]
+                    else:
+                        self.known_weights[idx] = (self.heard_weights_times[idx] * self.known_weights[idx]  + got_weights[idx]) / \
+                            (self.heard_weights_times[idx] + 1)
+                        self.heard_weights_times[idx] += 1
             except (json.decoder.JSONDecodeError, AttributeError, UnicodeDecodeError) as decoder_ex:
                 logging.debug('Не может быть декодировано: '+ str(message.content))
 
